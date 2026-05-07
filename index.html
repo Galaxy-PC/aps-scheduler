@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>APS 智能调度控制台</title>
+    <link href="/static/bootstrap.min.css" rel="stylesheet">
+    <link href="/static/tabulator.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f4f6f9; font-size: 0.85rem; overflow: hidden; }
+        .sidebar { background: #fff; border-right: 1px solid #ddd; height: 100vh; overflow-y: auto; padding: 15px; }
+        .main-content { height: 100vh; overflow-y: auto; padding: 15px; position: relative; }
+        .config-group { background: #f8f9fa; padding: 12px; border-radius: 6px; margin-bottom: 15px; border: 1px solid #e9ecef; }
+        .section-title { font-weight: bold; color: #0d6efd; margin-bottom: 10px; border-bottom: 1px solid #dee2e6; padding-bottom: 5px;}
+        .overlay-loader { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.9); z-index: 1000; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+        .hidden { display: none !important; }
+        
+        .calendar-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; font-weight: bold; font-size: 1.1rem; }
+        .calendar-weekdays { display: grid; grid-template-columns: repeat(7, 1fr); text-align: center; font-weight: bold; margin-bottom: 5px; color: #6c757d;}
+        .calendar-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+        .day-box { padding: 8px; border: 1px solid #eee; border-radius: 4px; cursor: pointer; text-align: center; background: #fff; min-height: 50px; display: flex; flex-direction: column; justify-content: center; }
+        .day-box:hover { background: #e9ecef; border-color: #ccc; }
+        .day-box.active { background: #0d6efd; color: white; font-weight: bold; }
+        .day-box.empty { background: transparent; border: none; cursor: default; }
+
+        .train-card { border-left: 4px solid #dee2e6; margin-bottom: 8px; padding: 8px 12px; background: #fff; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .card-major { border-left-color: #dc3545; background-color: #fff5f5; }
+        .card-repair { border-left-color: #0dcaf0; background-color: #f0fcfd; }
+        .card-rest { border-left-color: #6c757d; opacity: 0.85; }
+        .card-run { border-left-color: #28a745; }
+    </style>
+</head>
+<body>
+
+<div class="container-fluid p-0">
+    <div class="row g-0">
+        <div class="col-md-3 sidebar shadow-sm">
+            <h5 class="mb-3 fw-bold text-primary">⚙️ APS 调度控制台</h5>
+            
+            <div class="config-group">
+                <div class="section-title">1. 初始数据导入</div>
+                <input type="file" id="excelFile" class="form-control form-control-sm mb-2" accept=".xlsx, .xls">
+                <button class="btn btn-outline-primary btn-sm w-100" onclick="uploadFile()">解析校验 Excel 数据</button>
+            </div>
+
+            <form id="configForm">
+                <div class="config-group">
+                    <div class="section-title">2. 核心调度参数</div>
+                    
+                    <label class="form-label text-muted small mb-1">关键维修阈值设定</label>
+                    <div class="input-group input-group-sm mb-2">
+                        <span class="input-group-text bg-danger text-white">大修目标</span>
+                        <input type="number" class="form-control" id="limitMajor" value="1580000">
+                        <span class="input-group-text">km</span>
+                    </div>
+                    <div class="input-group input-group-sm mb-3">
+                        <span class="input-group-text bg-primary text-white">架修触发</span>
+                        <input type="number" class="form-control" id="limitRack" value="790000">
+                        <span class="input-group-text">km</span>
+                    </div>
+
+                    <label class="form-label text-muted small mb-1">每日发车需求与档位</label>
+                    <div class="input-group input-group-sm mb-2">
+                        <span class="input-group-text">工作日 (WD)</span>
+                        <input type="number" class="form-control" id="reqWD" value="29">
+                    </div>
+                    <div class="input-group input-group-sm mb-2">
+                        <span class="input-group-text">周末 (WE)</span>
+                        <input type="number" class="form-control" id="reqWE" value="28">
+                    </div>
+                    
+                    <button type="button" class="btn btn-sm btn-outline-secondary w-100 mt-1" data-bs-toggle="modal" data-bs-target="#taskModal">
+                        ⚙️ 配置排班任务档位 (km/tag)
+                    </button>
+                </div>
+            </form>
+
+            <button class="btn btn-success w-100 mt-2 shadow-sm py-2 fw-bold" onclick="startSimulation()">
+                🚀 3. 开始智能仿真排程
+            </button>
+        </div>
+
+        <div class="col-md-9 main-content">
+            <div id="loadingOverlay" class="overlay-loader hidden">
+                <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;"></div>
+                <h4 class="fw-bold">排班矩阵计算中 (自动推演至终局)...</h4>
+                <div class="w-50 mt-3"><div class="progress"><div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated text-center" style="width:0%; font-weight:bold;">0%</div></div></div>
+            </div>
+
+            <div class="card mb-3 border-0 shadow-sm" id="previewCard">
+                <div class="card-header bg-white fw-bold">📊 列车初始状态矩阵 <small class="text-muted fw-normal">(双击单元格可修改)</small></div>
+                <div class="card-body p-2"><div id="dataTable" style="height: 350px;"></div></div>
+            </div>
+
+            <div id="resultArea" class="hidden">
+                <div class="d-flex justify-content-between align-items-center mb-3 p-2 bg-white rounded shadow-sm border-start border-success border-4">
+                    <div>
+                        <h6 class="mb-0 text-success fw-bold">✅ 仿真计算完成</h6>
+                        <small class="text-muted">耗时：<span id="timeCost"></span>s | 实际运算天数：<span id="totalDaysResult" class="text-danger fw-bold"></span> 天</small>
+                    </div>
+                    <div>
+                        <button class="btn btn-sm btn-outline-danger me-1 mb-1 fw-bold" onclick="exportRepair()">💾 导出大架修计划 (repair.xlsx)</button>
+                        <button class="btn btn-sm btn-outline-success me-3 mb-1 fw-bold" onclick="exportSchedule()">💾 导出每日排班表 (schedule.xlsx)</button>
+                        <button class="btn btn-sm btn-outline-secondary mb-1" onclick="document.getElementById('resultArea').classList.add('hidden'); document.getElementById('previewCard').classList.remove('hidden');">重新运行</button>
+                    </div>
+                </div>
+
+                <div class="row mb-3">
+                    <div class="col-12">
+                        <div class="card shadow-sm border-0">
+                            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                                <span class="fw-bold text-dark">📈 全局里程热力与维修甘特图</span>
+                                <div>
+                                    <span class="badge bg-danger fs-6 me-2" id="kpiRepair">🔧 维修中: 0 列</span>
+                                    <span class="badge bg-success fs-6" id="kpiOp">📅 运营中: 0 列</span>
+                                </div>
+                            </div>
+                            <div class="card-body py-1">
+                                <div class="mb-1" style="font-size: 0.75rem;">
+                                    <span class="badge" style="background:#dc3545">红: 大/架修</span>
+                                    <span class="badge" style="background:#0dcaf0; color: #000;">青: 专项/小修</span>
+                                    <span class="badge" style="background:#6c757d">灰: 休息/停运</span>
+                                    <span class="ms-2 text-muted">底色: 浅黄→深橘 (里程增加)</span>
+                                </div>
+                                <div id="ganttChart" style="height: 300px; width: 100%;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="row g-3">
+                    <div class="col-md-5">
+                        <div class="card shadow-sm border-0 h-100">
+                            <div class="card-header bg-light fw-bold text-dark">🗓️ 仿真日历 (选择日期查看)</div>
+                            <div class="card-body">
+                                <div class="calendar-header">
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="changeMonth(-1)">◀ 上月</button>
+                                    <span id="currentMonthLabel">2026年2月</span>
+                                    <button class="btn btn-sm btn-outline-secondary" onclick="changeMonth(1)">下月 ▶</button>
+                                </div>
+                                <div class="calendar-weekdays">
+                                    <div>日</div><div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div>
+                                </div>
+                                <div class="calendar-grid" id="simCalendar"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-7">
+                        <div class="card shadow-sm border-0 h-100">
+                            <div class="card-header bg-light fw-bold text-dark">
+                                📋 <span id="selectedDateLabel">选择日期</span> 调度快照
+                            </div>
+                            <div class="card-body p-2" style="background: #f8f9fa; max-height: 400px; overflow-y:auto;" id="dailyDetails">
+                                <div class="text-center text-muted mt-5">👈 请在左侧日历中点击某一天</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="taskModal" tabindex="-1">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title fw-bold">⚙️ 配置排班任务档位</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+          <div class="row">
+              <div class="col-6">
+                  <h6 class="fw-bold">工作日 (WD) 档位</h6>
+                  <div id="wdTable" class="border rounded"></div>
+              </div>
+              <div class="col-6">
+                  <h6 class="fw-bold">周末 (WE) 档位</h6>
+                  <div id="weTable" class="border rounded"></div>
+              </div>
+          </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/tabulator.min.js"></script>
+<script src="/static/bootstrap.bundle.min.js"></script>
+<script src="/static/echarts.min.js"></script>
+
+<script>
+    let table, wdTable, weTable;
+    let simInterval, startTime;
+    let globalLogs = [];
+    let trainIDs = [];
+    let globalSimulationResults = null;
+    let currentRenderMonth = new Date(2026, 1, 1);
+
+    let task_wd = [
+        {"code": "WD_H600", "km": 600, "count": 3, "tag": "多跑1"},
+        {"code": "WD_H570", "km": 570, "count": 5, "tag": "多跑2"},
+        {"code": "WD_M530", "km": 530, "count": 4, "tag": "适当1"},
+        {"code": "WD_M480", "km": 480, "count": 4, "tag": "适当2"},
+        {"code": "WD_M420", "km": 420, "count": 4, "tag": "适当3"},
+        {"code": "WD_L350", "km": 350, "count": 3, "tag": "适当4"},
+        {"code": "WD_L250", "km": 250, "count": 3, "tag": "少跑1"},
+        {"code": "WD_L120", "km": 120, "count": 3, "tag": "少跑2"}
+    ];
+    let task_we = [
+        {"code": "WE_H590", "km": 590, "count": 3, "tag": "多跑1"},
+        {"code": "WE_H560", "km": 560, "count": 5, "tag": "多跑2"},
+        {"code": "WE_M520", "km": 520, "count": 4, "tag": "适当1"},
+        {"code": "WE_M470", "km": 470, "count": 4, "tag": "适当2"},
+        {"code": "WE_M410", "km": 410, "count": 4, "tag": "适当3"},
+        {"code": "WE_L340", "km": 340, "count": 3, "tag": "适当4"},
+        {"code": "WE_L240", "km": 240, "count": 3, "tag": "少跑1"},
+        {"code": "WE_L120", "km": 120, "count": 2, "tag": "少跑2"}
+    ];
+
+    function initTaskTables() {
+        const cols = [
+            {title: "代码", field: "code", editor: "input", width:90},
+            {title: "里程(km)", field: "km", editor: "number", width:80},
+            {title: "数量", field: "count", editor: "number", width:70},
+            {title: "标签", field: "tag", editor: "input"}
+        ];
+        wdTable = new Tabulator("#wdTable", { data: task_wd, columns: cols, layout: "fitColumns" });
+        weTable = new Tabulator("#weTable", { data: task_we, columns: cols, layout: "fitColumns" });
+    }
+    setTimeout(initTaskTables, 500);
+
+    document.getElementById('taskModal').addEventListener('shown.bs.modal', function () {
+        wdTable.redraw();
+        weTable.redraw();
+    });
+
+    function initTable(data) {
+        trainIDs = data.map(row => String(row['车号']).split('.')[0].padStart(4, '0')).sort();
+        table = new Tabulator("#dataTable", {
+            data: data, layout: "fitColumns",
+            columns: [
+                {title: "序号", field: "列车序号", width: 70},
+                {title: "车号", field: "车号", editor: "input", width: 80},
+                {title: "当前里程", field: "累积里程", editor: "number"},
+                {title: "初态", field: "运营状态", editor: "input", width: 60},
+                {title: "第一次均衡修", field: "第一次均衡修时间", editor: "input"},
+                {title: "第一次专项修6", field: "第一次专项修6时间", editor: "input"},
+                {title: "第一次专项修12", field: "第一次专项修12时间", editor: "input"}
+            ],
+        });
+    }
+
+    // 核心更改 1：全面替换为 /api/... 相对路径
+    async function uploadFile() {
+        const fileInput = document.getElementById('excelFile');
+        if (!fileInput.files[0]) return alert("请选择Excel文件！");
+        const fd = new FormData(); fd.append("file", fileInput.files[0]);
+        try {
+            const res = await fetch('/api/upload', { method: 'POST', body: fd });
+            const json = await res.json();
+            if (res.ok) initTable(json.data); else alert("失败: " + json.error);
+        } catch(e) { alert("后台未启动或网络错误"); }
+    }
+
+    async function startSimulation() {
+        if(!table) return alert("请先导入数据！");
+        document.getElementById('loadingOverlay').classList.remove('hidden');
+        document.getElementById('previewCard').classList.add('hidden');
+        document.getElementById('resultArea').classList.add('hidden');
+        startTime = Date.now();
+        try {
+            const reqData = {
+                data: table.getData(),
+                config: {
+                    limit_target_major: parseInt(document.getElementById('limitMajor').value),
+                    limit_trigger_rack: parseInt(document.getElementById('limitRack').value),
+                    req_count_wd: parseInt(document.getElementById('reqWD').value),
+                    req_count_we: parseInt(document.getElementById('reqWE').value),
+                    task_wd: JSON.stringify(wdTable.getData()),
+                    task_we: JSON.stringify(weTable.getData())
+                }
+            };
+            const res = await fetch('/api/start_sim', {
+                method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(reqData)
+            });
+            const json = await res.json();
+            simInterval = setInterval(() => checkStatus(json.task_id), 1000);
+        } catch (e) { alert("请求失败"); document.getElementById('loadingOverlay').classList.add('hidden'); document.getElementById('previewCard').classList.remove('hidden');}
+    }
+
+    async function checkStatus(taskId) {
+        const res = await fetch(`/api/status/${taskId}`);
+        const data = await res.json();
+        
+        if(data.status === 'running') {
+            document.getElementById('progressBar').style.width = data.progress + '%';
+            document.getElementById('progressBar').innerText = '正计算至 Day: ' + data.current_day;
+        } else if (data.status === 'completed') {
+            clearInterval(simInterval);
+            document.getElementById('loadingOverlay').classList.add('hidden');
+            document.getElementById('resultArea').classList.remove('hidden');
+            
+            globalSimulationResults = data.result;
+            globalLogs = globalSimulationResults.schedule_logs || [];
+            
+            document.getElementById('timeCost').innerText = data.time_cost;
+            document.getElementById('totalDaysResult').innerText = globalLogs.length; 
+            
+            if(globalLogs.length > 0) {
+                setTimeout(() => {
+                    renderGlobalGantt(globalLogs);
+                    renderCalendar(); 
+                }, 100);
+            } else {
+                alert("仿真返回空数据，请检查排班条件。");
+            }
+        } else if (data.status === 'error') {
+            clearInterval(simInterval);
+            document.getElementById('loadingOverlay').classList.add('hidden');
+            document.getElementById('previewCard').classList.remove('hidden');
+            alert("计算报错，已终止: " + data.error);
+        }
+    }
+
+    function renderGlobalGantt(logs) {
+        let myChart = echarts.getInstanceByDom(document.getElementById('ganttChart'));
+        if (myChart) myChart.dispose();
+        myChart = echarts.init(document.getElementById('ganttChart'));
+        
+        const days = logs.map(l => 'D'+l.Day);
+        let heatData = [], repairData = [];
+
+        logs.forEach((log, dIdx) => {
+            trainIDs.forEach((tid, tIdx) => {
+                const km = log[`${tid}_KM`];
+                const task = log[`${tid}_Task`];
+                if (km !== undefined) heatData.push([dIdx, tIdx, km]);
+                
+                let color = null;
+                if (['MAJOR', 'RACK'].includes(task)) color = '#dc3545';
+                else if (['SPEC12', 'SPEC6', 'EQ', 'SP'].includes(task)) color = '#0dcaf0';
+                else if (['REST', 'STOP'].includes(task)) color = '#6c757d';
+
+                if (color) repairData.push({value: [dIdx, tIdx, task], itemStyle: {color: color}});
+            });
+        });
+
+        let maxKm = parseInt(document.getElementById('limitMajor').value);
+        if (isNaN(maxKm) || maxKm <= 0) maxKm = 1600000;
+
+        myChart.setOption({
+            tooltip: { position: 'top', formatter: p => `车号: ${trainIDs[p.value[1]]} <br> ${p.seriesName=='维修状态'? '状态:'+p.value[2] : '里程:'+p.value[2]}` },
+            dataZoom: [{ type: 'slider', xAxisIndex: 0, bottom: 5, start: 0, end: Math.min(15, 100) }],
+            grid: { top: 10, right: 20, bottom: 40, left: 50 },
+            xAxis: { type: 'category', data: days },
+            yAxis: { type: 'category', data: trainIDs },
+            visualMap: { show: false, seriesIndex: 0, min: 0, max: maxKm, inRange: { color: ['#fff9e6', '#ffc107', '#fd7e14', '#e85d04'] } },
+            series: [
+                { name: '里程', type: 'heatmap', data: heatData, progressive: 2000 },
+                { 
+                    name: '维修状态', 
+                    type: 'custom', 
+                    renderItem: function (params, api) {
+                        var point = api.coord([api.value(0), api.value(1)]);
+                        var size = api.size([1, 1]); 
+                        return {
+                            type: 'rect',
+                            shape: {
+                                x: point[0] - size[0] / 2,
+                                y: point[1] - size[1] / 2,
+                                width: size[0] * 0.95, 
+                                height: size[1] * 0.95
+                            },
+                            style: api.style()
+                        };
+                    },
+                    data: repairData 
+                }
+            ]
+        });
+    }
+
+    function changeMonth(offset) {
+        currentRenderMonth.setMonth(currentRenderMonth.getMonth() + offset);
+        renderCalendar();
+    }
+
+    function renderCalendar() {
+        const y = currentRenderMonth.getFullYear();
+        const m = currentRenderMonth.getMonth();
+        document.getElementById('currentMonthLabel').innerText = `${y}年${m+1}月`;
+        
+        const firstDay = new Date(y, m, 1).getDay();
+        const daysInMonth = new Date(y, m + 1, 0).getDate();
+        
+        const cal = document.getElementById('simCalendar');
+        cal.innerHTML = '';
+        
+        for(let i=0; i<firstDay; i++) cal.innerHTML += `<div class="day-box empty"></div>`;
+        
+        let firstMatchDiv = null;
+
+        for(let date=1; date<=daysInMonth; date++) {
+            let targetDateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(date).padStart(2,'0')}`;
+            let log = globalLogs.find(l => l.Date === targetDateStr);
+            
+            let div = document.createElement('div');
+            if (log) {
+                div.className = 'day-box';
+                div.innerHTML = `<span style="font-size:1.1rem">${date}</span><small class="text-muted">D${log.Day}</small>`;
+                div.onclick = function() {
+                    document.querySelectorAll('.day-box').forEach(el => el.classList.remove('active'));
+                    this.classList.add('active');
+                    renderDailyDetails(log);
+                };
+                if (!firstMatchDiv) firstMatchDiv = div;
+            } else {
+                div.className = 'day-box empty';
+                div.innerHTML = `<span class="text-muted">${date}</span>`;
+            }
+            cal.appendChild(div);
+        }
+
+        if(firstMatchDiv) firstMatchDiv.click();
+        else document.getElementById('dailyDetails').innerHTML = `<div class="text-center text-muted mt-4">该月份无排程数据</div>`;
+    }
+
+    // 核心更改 2：中文化字典与双标签文字叠加
+    function renderDailyDetails(log) {
+        document.getElementById('selectedDateLabel').innerText = log.Date;
+        let opCount = 0, repCount = 0;
+        let htmlList = [];
+        
+        let limitMajor = parseInt(document.getElementById('limitMajor').value);
+        if (isNaN(limitMajor)) limitMajor = 1580000;
+        let limitRack = parseInt(document.getElementById('limitRack').value);
+        if (isNaN(limitRack)) limitRack = 790000;
+
+        // 状态码汉化映射表
+        const taskNameMap = {
+            'MAJOR': '大修',
+            'RACK': '架修',
+            'SPEC12': '特别修12',
+            'SPEC6': '特别修6',
+            'EQ': '均衡修',
+            'SP': '特别修',
+            'REST': '休息/停运',
+            'STOP': '强制停运'
+        };
+
+        trainIDs.forEach(tid => {
+            const task = log[`${tid}_Task`];
+            const tag = log[`${tid}_Tag`];
+            const km = log[`${tid}_KM`];
+            const group = log[`${tid}_Group`];
+            const code = log[`${tid}_Code`];
+            
+            // 组名汉化
+            const groupZh = group === 'MAJOR' ? '大修' : (group === 'RACK' ? '架修' : group);
+            // 任务名汉化
+            const displayTask = taskNameMap[task] || task;
+            
+            let isWarn = false, isRep = false, isRest = false;
+            let badgeHtml = "", cardClass = "";
+
+            if (['MAJOR', 'RACK'].includes(task)) { 
+                isWarn = true; repCount++; 
+                badgeHtml = `<span class="badge bg-danger text-white">${task}</span>`; 
+                cardClass = "card-major"; 
+            } else if (['SPEC12', 'SPEC6'].includes(task)) { 
+                isRep = true; repCount++; 
+                badgeHtml = `<span class="badge bg-info text-dark">${task}</span>`; 
+                cardClass = "card-repair"; 
+            } else if (['EQ', 'SP'].includes(task)) {
+                isRep = true; repCount++;
+                cardClass = "card-repair";
+                badgeHtml = `<span class="badge bg-info text-dark me-1">${task}</span>`;
+                if (code && code !== "-" && code !== "STOP" && code !== "REST") {
+                    opCount++; 
+                    let tagColor = "bg-warning text-dark"; 
+                    if (tag.includes("多跑")) tagColor = "bg-success text-white"; 
+                    else if (tag.includes("适当")) tagColor = "bg-primary text-white"; 
+                    badgeHtml += `<span class="badge ${tagColor}">${code}</span>`;
+                }
+            } else if (['REST', 'STOP'].includes(task)) { 
+                isRest = true; 
+                badgeHtml = `<span class="badge bg-secondary text-white">${task}</span>`; 
+                cardClass = "card-rest"; 
+            } else { 
+                opCount++; 
+                cardClass = "card-run";
+                let bgClass = "bg-success text-white"; 
+                if (tag.includes("多跑")) bgClass = "bg-success text-white";
+                else if (tag.includes("适当")) bgClass = "bg-primary text-white";
+                else if (tag.includes("少跑")) bgClass = "bg-warning text-dark";
+                badgeHtml = `<span class="badge ${bgClass}">${code}</span>`;
+            }
+
+            let suggestHtml = "";
+            if (!isWarn && !isRest && km > 0) {
+                let limitVal = (group === 'MAJOR') ? limitMajor : limitRack;
+                let daysLeft = Math.max(0, (limitVal - km) / 400); 
+                
+                let predDate = new Date(log.Date);
+                predDate.setDate(predDate.getDate() + daysLeft);
+                let pDateStr = `${predDate.getFullYear()}-${String(predDate.getMonth()+1).padStart(2,'0')}-${String(predDate.getDate()).padStart(2,'0')}`;
+                let repType = (group === 'MAJOR') ? '大修' : '架修';
+                
+                let adviceHtml = "";
+                if (tag && tag !== "-") {
+                    let textColor = tag.includes('多跑') ? 'text-success' : (tag.includes('适当') ? 'text-primary' : 'text-warning');
+                    
+                    // EQ/SP 附加修饰词逻辑：例如 "少跑1"+"均衡修"
+                    if (['EQ', 'SP'].includes(task)) {
+                        adviceHtml = `今日排班标签：<span class="${textColor} fw-bold">“${tag}”+“${displayTask}”</span>`;
+                    } else {
+                        adviceHtml = `今日排班标签：<span class="${textColor} fw-bold">“${tag}”</span>`;
+                    }
+                } else {
+                    adviceHtml = `今日状态：<span class="text-secondary fw-bold">“${displayTask}”</span>`;
+                }
+                
+                suggestHtml = `预计 ${pDateStr} 开始${repType}。${adviceHtml}`;
+            } else if (isRest) {
+                suggestHtml = `今日状态：<span class="text-secondary fw-bold">“${displayTask}”</span>`;
+            } else {
+                suggestHtml = `今日状态：<span class="text-danger fw-bold">“正在执行 ${displayTask} 维保计划”</span>`;
+            }
+
+            htmlList.push(`
+                <div class="train-card ${cardClass}">
+                    <div class="d-flex justify-content-between align-items-center mb-1">
+                        <span style="font-size: 1rem;"><strong>车号：${tid}</strong> <span class="text-muted ms-2" style="font-size:0.8rem">| 组：${groupZh}</span></span>
+                        <div>${badgeHtml}</div>
+                    </div>
+                    <div class="text-dark" style="font-size: 0.9rem;">当前累积里程：<strong>${(km || 0).toLocaleString()} km</strong></div>
+                    ${suggestHtml ? `<div class="mt-1" style="font-size: 0.85rem;">${suggestHtml}</div>` : ''}
+                </div>
+            `);
+        });
+
+        document.getElementById('kpiOp').innerText = `📅 运营中: ${opCount} 列`;
+        document.getElementById('kpiRepair').innerText = `🔧 维修中: ${repCount} 列`;
+        document.getElementById('dailyDetails').innerHTML = htmlList.join('');
+    }
+    
+    // 导出文件均改写为相对路径
+    async function exportRepair() {
+        if (!globalSimulationResults) return;
+        const res = await fetch('/api/export_repair', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(globalSimulationResults)
+        });
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = window.URL.createObjectURL(blob);
+        a.download = "output_repair.xlsx";
+        a.click();
+    }
+
+    async function exportSchedule() {
+        if (!globalSimulationResults) return;
+        const res = await fetch('/api/export_schedule', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(globalSimulationResults)
+        });
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = window.URL.createObjectURL(blob);
+        a.download = "output_schedule.xlsx";
+        a.click();
+    }
+</script>
+</body>
+</html>
