@@ -3,8 +3,10 @@ A lightweight production scheduling system built with Flask and ECharts. It prov
 
 Quick Start
 
+```bash
 # Install dependencies
 pip install -r requirements.txt
 
 # Run server
 python app.py
+```
